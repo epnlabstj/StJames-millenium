@@ -7,20 +7,20 @@ let markers = {};
 let userLocationMarker = null;
 let userLocationCircle = null;
 let html5QrCode = null;
-let unlockedBadges = JSON.parse(localStorage.getItem('stjames_badges_v9') || '[]');
+let unlockedBadges = JSON.parse(localStorage.getItem('stjames_badges_v10') || '[]');
 let currentAudioElement = null;
 let deferredPrompt = null;
 
-// Register Service Worker for PWA (Native App behavior)
+// Enregistrement PWA Service Worker
 if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
         navigator.serviceWorker.register('./sw.js')
-            .then(reg => console.log('Service Worker enregistré:', reg.scope))
-            .catch(err => console.error('Erreur Service Worker:', err));
+            .then(reg => console.log('Service Worker OK'))
+            .catch(err => console.warn('Service Worker non actif:', err));
     });
 }
 
-// Handle App Install Prompt
+// Prompt Installation
 window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredPrompt = e;
@@ -32,9 +32,6 @@ function installPWA() {
     if (deferredPrompt) {
         deferredPrompt.prompt();
         deferredPrompt.userChoice.then((choiceResult) => {
-            if (choiceResult.outcome === 'accepted') {
-                console.log('Utilisateur a installé l'application');
-            }
             deferredPrompt = null;
             const installBanner = document.getElementById('installBanner');
             if (installBanner) installBanner.classList.add('hidden');
@@ -43,11 +40,16 @@ function installPWA() {
 }
 
 window.onload = function() {
-    fetch('data.json')
-        .then(response => response.json())
+    fetch('./data.json')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error("Erreur HTTP " + response.status);
+            }
+            return response.json();
+        })
         .then(data => {
-            CIRCUIT_HISTORIQUE = data.circuit_principal;
-            CIRCUIT_EVENEMENTIEL = data.circuit_evenementiel;
+            CIRCUIT_HISTORIQUE = data.circuit_principal || [];
+            CIRCUIT_EVENEMENTIEL = data.circuit_evenementiel || [];
             initMap();
             if (CIRCUIT_EVENEMENTIEL.length > 0) {
                 activeStopId = CIRCUIT_EVENEMENTIEL[0].id;
@@ -58,6 +60,17 @@ window.onload = function() {
         })
         .catch(err => {
             console.error("Erreur de chargement de data.json:", err);
+            const container = document.getElementById('stopDetailView');
+            if (container) {
+                container.innerHTML = `
+                    <div class="p-6 bg-red-900/40 border border-red-500/50 rounded-2xl text-center space-y-3">
+                        <i class="fa-solid fa-triangle-exclamation text-3xl text-red-400"></i>
+                        <h3 class="text-base font-bold text-red-200">Erreur de chargement des données</h3>
+                        <p class="text-xs text-slate-300">Impossible d'accéder à <code>data.json</code>.</p>
+                        <p class="text-[11px] text-slate-400">Vérifiez que le fichier data.json est présent dans le même dossier.</p>
+                    </div>
+                `;
+            }
         });
 };
 
@@ -158,36 +171,48 @@ function updateUserPositionOnMap(lat, lng, accuracy) {
             userLocationCircle.setRadius(accuracy || 25);
         }
     } else {
-        userLocationMarker = L.marker([lat, lng], { icon: googleMapsDotIcon, zIndexOffset: 9999 }).addTo(map).bindPopup("<b class='text-xs'>Vous êtes ici (Position GPS en direct)</b>");
+        userLocationMarker = L.marker([lat, lng], { icon: googleMapsDotIcon, zIndexOffset: 9999 }).addTo(map).bindPopup("<b class='text-xs'>Vous êtes ici (Position GPS)</b>");
         userLocationCircle = L.circle([lat, lng], { radius: accuracy || 25, color: '#38bdf8', fillColor: '#38bdf8', fillOpacity: 0.2, weight: 1.5 }).addTo(map);
     }
     
     const statusText = document.getElementById('gpsStatusText');
     if (statusText) {
-        statusText.innerHTML = "<span class='text-sky-400 font-bold'><i class='fa-solid fa-location-dot animate-bounce mr-1.5'></i>GPS Actif :</span> " + lat.toFixed(5) + ", " + lng.toFixed(5);
+        statusText.innerHTML = "<span class='text-sky-400 font-bold'><i class='fa-solid fa-location-dot mr-1.5'></i>GPS Actif :</span> " + lat.toFixed(5) + ", " + lng.toFixed(5);
     }
 }
 
 function startLiveGeolocation() {
     if ("geolocation" in navigator) {
+        const geoOptions = {
+            enableHighAccuracy: true,
+            timeout: 20000,
+            maximumAge: 5000
+        };
+
         navigator.geolocation.watchPosition(
             position => {
                 updateUserPositionOnMap(position.coords.latitude, position.coords.longitude, position.coords.accuracy);
             },
             error => {
-                console.warn("Erreur GPS:", error.message);
+                console.warn("Erreur GPS (watchPosition):", error.code, error.message);
                 const statusText = document.getElementById('gpsStatusText');
                 if (statusText) {
-                    statusText.innerHTML = "<span class='text-amber-300'><i class='fa-solid fa-triangle-exclamation mr-1'></i>GPS : Activez la localisation sur votre smartphone</span>";
+                    statusText.innerHTML = "<span class='text-amber-300'><i class='fa-solid fa-triangle-exclamation mr-1'></i>GPS : En attente de signal...</span>";
                 }
             },
-            { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+            geoOptions
         );
     }
 }
 
 function locateUser() {
     if ("geolocation" in navigator) {
+        const geoOptions = {
+            enableHighAccuracy: true,
+            timeout: 15000,
+            maximumAge: 0
+        };
+
         navigator.geolocation.getCurrentPosition(
             position => {
                 const lat = position.coords.latitude;
@@ -197,10 +222,19 @@ function locateUser() {
                 if (userLocationMarker) userLocationMarker.openPopup();
             },
             error => {
-                alert("Veuillez autoriser l'accès GPS dans les réglages de votre navigateur.");
+                console.warn("Erreur GPS (getCurrentPosition):", error.code, error.message);
+                let errorMsg = "Impossible de récupérer votre position.";
+                if (error.code === error.PERMISSION_DENIED) {
+                    errorMsg = "L'accès à la géolocalisation a été refusé. Vérifiez les réglages de votre navigateur.";
+                } else if (error.code === error.TIMEOUT) {
+                    errorMsg = "Délai dépassé : signal GPS trop faible (êtes-vous à l'intérieur ?).";
+                }
+                alert(errorMsg);
             },
-            { enableHighAccuracy: true, timeout: 10000 }
+            geoOptions
         );
+    } else {
+        alert("La géolocalisation n'est pas disponible sur votre appareil.");
     }
 }
 
@@ -287,7 +321,7 @@ function renderActiveStop(stopId) {
                     <div class="w-8 h-8 rounded-lg ${isEvent ? 'bg-blue-500/20 text-blue-400' : 'bg-amber-500/20 text-amber-400'} flex items-center justify-center"><i class="fa-solid fa-headphones"></i></div>
                     <div>
                         <h4 class="text-xs font-bold text-slate-200">Guide Audio Personnel</h4>
-                        <p class="text-[10px] text-slate-400" id="audioStatusText">Fichier cible : <strong class="text-slate-200">${stop.audioFile}</strong></p>
+                        <p class="text-[10px] text-slate-400" id="audioStatusText">Fichier : <strong class="text-slate-200">${stop.audioFile}</strong></p>
                     </div>
                 </div>
             </div>
@@ -325,7 +359,7 @@ function renderActiveStop(stopId) {
             <p class="text-xs font-medium text-slate-200 pt-1">${stop.quiz.question}</p>
             <div class="space-y-2">
                 ${stop.quiz.options.map((opt) => `
-                    <button onclick="checkQuizAnswer(${stop.id}, ${opt.correct})" class="w-full p-2.5 text-left rounded-xl bg-slate-800/80 ${isEvent ? 'hover:bg-blue-500/20 hover:border-blue-500/50' : 'hover:bg-amber-500/20 hover:border-amber-500/50'} border border-slate-700/60 text-xs text-slate-200 transition flex items-center justify-between">
+                    <button onclick="checkQuizAnswer(${stop.id},${opt.correct})" class="w-full p-2.5 text-left rounded-xl bg-slate-800/80 ${isEvent ? 'hover:bg-blue-500/20 hover:border-blue-500/50' : 'hover:bg-amber-500/20 hover:border-amber-500/50'} border border-slate-700/60 text-xs text-slate-200 transition flex items-center justify-between">
                         <span>${opt.text}</span>
                         <i class="fa-regular fa-circle text-slate-500"></i>
                     </button>
@@ -366,7 +400,7 @@ function toggleNativeAudio() {
         currentAudioElement.play().then(() => {
             updateAudioUI(true);
         }).catch(err => {
-            alert("Fichier audio non trouvé dans le dossier 'audio/'.\n\nVérifiez que le fichier existe et porte le bon nom (ex: audio/event_1.mp3).");
+            alert("Fichier audio non trouvé dans le dossier 'audio/'.\n\nDéposez le fichier MP3 correspondant pour l'écouter !");
         });
     } else {
         currentAudioElement.pause();
@@ -433,17 +467,17 @@ function handleQRScannedCode(code) {
         switchView('stops');
         return;
     }
-    alert("QR Code non reconnu pour les circuits.");
+    alert("QR Code non reconnu.");
 }
 
 function checkQuizAnswer(stopId, isCorrect) {
     if (isCorrect) {
         if (!unlockedBadges.includes(stopId)) {
             unlockedBadges.push(stopId);
-            localStorage.setItem('stjames_badges_v9', JSON.stringify(unlockedBadges));
+            localStorage.setItem('stjames_badges_v10', JSON.stringify(unlockedBadges));
             updateBadgeCount();
         }
-        alert("✨ Bravo ! Bonne réponse. Le blason a été ajouté à votre Pass du Chevalier.");
+        alert("✨ Bravo ! Bonne réponse. Le blason a été débloqué dans votre Pass.");
         renderActiveStop(stopId);
     } else { alert("Oups ! Réponse incorrecte. Réessayez !"); }
 }
@@ -465,7 +499,7 @@ function togglePassModal() {
                     <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xl ${isUnlocked ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-800 text-slate-600'}">${stop.quiz.badgeIcon}</div>
                     <div>
                         <h4 class="font-medieval text-xs font-bold ${isUnlocked ? 'text-amber-300' : 'text-slate-500'}">${stop.quiz.badgeName}</h4>
-                        <p class="text-[10px] text-slate-400">${isUnlocked ? 'Blason Gagné' : 'Verrouillé'}</p>
+                        <p class="text-[10px] text-slate-400">${isUnlocked ? 'Blason Débloqué' : 'Verrouillé'}</p>
                     </div>
                 </div>
             `;
